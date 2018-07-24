@@ -54,6 +54,13 @@ sub default_insertion_method {
 }
 
 
+sub overflow_limit {
+    return {
+        'submission_cmd_args' => 255,
+    };
+}
+
+
 sub object_class {
     return 'Bio::EnsEMBL::Hive::ResourceDescription';
 }
