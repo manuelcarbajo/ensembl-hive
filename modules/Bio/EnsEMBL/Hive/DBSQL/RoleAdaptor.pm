@@ -50,6 +50,18 @@ sub default_table_name {
     return 'role';
 }
 
+sub default_input_column_mapping {
+    my $self    = shift @_;
+    my $driver  = $self->dbc->driver();
+    return  {
+        # Add another column based on when_started
+        'when_started' => 'when_started, ' . {
+                            'mysql'     => "UNIX_TIMESTAMP()-UNIX_TIMESTAMP(when_started) seconds_since_when_started ",
+                            'sqlite'    => "strftime('%s','now')-strftime('%s',when_started) seconds_since_when_started ",
+                            'pgsql'     => "EXTRACT(EPOCH FROM CURRENT_TIMESTAMP - when_started) seconds_since_when_started ",
+        }->{$driver},
+    };
+}
 
 sub object_class {
     return 'Bio::EnsEMBL::Hive::Role';
