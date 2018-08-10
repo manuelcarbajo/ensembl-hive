@@ -93,7 +93,7 @@ CREATE OR REPLACE VIEW resource_usage_stats AS
 --       select * from live_roles where resource_class_id=12;
 
 CREATE OR REPLACE VIEW live_roles AS
-    SELECT w.meadow_user, w.meadow_type, w.resource_class_id, rc.name resource_class_name, r.analysis_id, a.logic_name, count(*)
+    SELECT w.meadow_user, w.meadow_type, w.resource_class_id, rc.name resource_class_name, r.analysis_id, a.logic_name, count(*) AS num_workers
     FROM worker w
     JOIN role r USING(worker_id)
     LEFT JOIN resource_class rc ON w.resource_class_id=rc.resource_class_id
