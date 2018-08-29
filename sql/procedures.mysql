@@ -122,6 +122,27 @@ CREATE OR REPLACE VIEW beekeeper_activity AS
     ON b.beekeeper_id = lm.beekeeper_id
     GROUP BY b.beekeeper_id;
 
+-- show semaphores by job with logic name
+--
+-- Usage:
+--       select * from job_semaphores;
+--       select * from job_semaphores where controlling_logic_name = 'an_analysis';
+--
+--       -- get semaphore counts for jobs of a particular semaphored analysis
+--       select distinct semaphored_job_id, semaphore_count from job_semaphores
+--       where semaphored_logic_name = 'an_analysis'
+
+CREATE OR REPLACE VIEW job_semaphores AS
+    SELECT c_ab.logic_name AS controlling_logic_name, s_ab.logic_name as semaphored_logic_name,
+           c_j.job_id as controlling_job_id,
+           (s.local_jobs_counter + s.remote_jobs_counter) AS semaphore_count,
+           s.dependent_job_id AS semaphored_job_id, s.dependent_semaphore_url
+    FROM semaphore s
+    LEFT JOIN job c_j ON s.semaphore_id = c_j.controlled_semaphore_id
+    LEFT JOIN analysis_base c_ab ON c_ab.analysis_id = c_j.analysis_id
+    LEFT JOIN job s_j ON s_j.job_id = s.dependent_job_id
+    LEFT JOIN analysis_base s_ab ON s_ab.analysis_id = s_j.analysis_id;
+
 -- time an analysis or group of analyses (given by a name pattern) ----------------------------------------
 --
 -- Usage:
