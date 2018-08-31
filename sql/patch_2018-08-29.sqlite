@@ -40,17 +40,44 @@ CREATE VIEW IF NOT EXISTS resource_usage_stats AS
     GROUP BY a.analysis_id, w.meadow_type, rc.resource_class_id, u.exit_status
     ORDER BY a.analysis_id, w.meadow_type, rc.resource_class_id, u.exit_status;
 
+DROP VIEW IF EXISTS live_roles;
+CREATE VIEW IF NOT EXISTS live_roles AS
+    SELECT w.meadow_user, w.meadow_type, w.resource_class_id, rc.name resource_class_name, r.analysis_id, a.logic_name, count(*) AS num_workers
+    FROM worker w
+    JOIN role r USING(worker_id)
+    LEFT JOIN resource_class rc ON w.resource_class_id=rc.resource_class_id
+    LEFT JOIN analysis_base a ON a.analysis_id = r.analysis_id
+    WHERE r.when_finished IS NULL
+    GROUP BY w.meadow_user, w.meadow_type, w.resource_class_id, rc.name, r.analysis_id, a.logic_name;
+
 DROP VIEW IF EXISTS job_semaphores;
 CREATE VIEW IF NOT EXISTS job_semaphores AS
-    SELECT c_ab.logic_name AS controlling_logic_name, s_ab.logic_name as semaphored_logic_name,
-           c_j.job_id as controlling_job_id,
-           (s.local_jobs_counter + s.remote_jobs_counter) AS semaphore_count,
+    SELECT s.semaphore_id,
+           fan_ab.logic_name AS controlling_logic_name,
+           fan_j.job_id AS controlling_job_id,
+           fan_j.status AS controlling_job_status,
+           funnel_ab.logic_name AS semaphored_logic_name,
            s.dependent_job_id AS semaphored_job_id, s.dependent_semaphore_url
     FROM semaphore s
-    LEFT JOIN job c_j ON s.semaphore_id = c_j.controlled_semaphore_id
-    LEFT JOIN analysis_base c_ab ON c_ab.analysis_id = c_j.analysis_id
-    LEFT JOIN job s_j ON s_j.job_id = s.dependent_job_id
-    LEFT JOIN analysis_base s_ab ON s_ab.analysis_id = s_j.analysis_id;
+    LEFT JOIN job fan_j ON s.semaphore_id = fan_j.controlled_semaphore_id
+    LEFT JOIN analysis_base fan_ab ON fan_ab.analysis_id = fan_j.analysis_id
+    LEFT JOIN job funnel_j ON funnel_j.job_id = s.dependent_job_id
+    LEFT JOIN analysis_base funnel_ab ON funnel_ab.analysis_id = funnel_j.analysis_id;
+
+DROP VIEW IF EXISTS semaphore_summary;
+CREATE VIEW IF NOT EXISTS semaphore_summary AS
+   SELECT s.semaphore_id, IFNULL(funnel_ab.logic_name, '(see remote hive)') as semaphored_logic_name,
+          s.dependent_job_id as semaphored_job_id, s.dependent_semaphore_url,
+          IFNULL(fan_ab.logic_name, '(see remote hive)') as controlling_logic_name,
+          COUNT(fan_j.job_id) as fan_jobs_this_analysis, s.remote_jobs_counter,
+          IFNULL(min(fan_j.job_id), '(see remote hive)') as example_controlling_job_id
+   FROM semaphore s
+   LEFT JOIN job fan_j ON s.semaphore_id = fan_j.controlled_semaphore_id
+   LEFT JOIN analysis_base fan_ab ON fan_ab.analysis_id = fan_j.analysis_id
+   LEFT JOIN job funnel_j ON funnel_j.job_id = s.dependent_job_id
+   LEFT JOIN analysis_base funnel_ab ON funnel_ab.analysis_id = funnel_j.analysis_id
+   WHERE fan_j.status NOT IN ('DONE', 'PASSED_ON') OR fan_j.status IS NULL
+   GROUP BY s.semaphore_id, funnel_ab.logic_name, s.dependent_job_id, fan_ab.logic_name, fan_j.analysis_id;
 
 
 -- ----------------------------------</actual_patch> -------------------------------------------------

@@ -124,26 +124,48 @@ CREATE OR REPLACE VIEW beekeeper_activity AS
     ON b.beekeeper_id = lm.beekeeper_id
     GROUP BY b.beekeeper_id;
 
--- show semaphores by job with logic name
+-- show jobs or dependent semaphore URLs associated with semaphores,
+-- along with logic names
 --
 -- Usage:
 --       select * from job_semaphores;
 --       select * from job_semaphores where controlling_logic_name = 'an_analysis';
---
---       -- get semaphore counts for jobs of a particular semaphored analysis
---       select distinct semaphored_job_id, semaphore_count from job_semaphores
---       where semaphored_logic_name = 'an_analysis'
 
 CREATE OR REPLACE VIEW job_semaphores AS
-    SELECT c_ab.logic_name AS controlling_logic_name, s_ab.logic_name as semaphored_logic_name,
-           c_j.job_id as controlling_job_id,
-           (s.local_jobs_counter + s.remote_jobs_counter) AS semaphore_count,
+    SELECT s.semaphore_id,
+           fan_ab.logic_name AS controlling_logic_name,
+           fan_j.job_id AS controlling_job_id,
+           fan_j.status AS controlling_job_status,
+           funnel_ab.logic_name AS semaphored_logic_name,
            s.dependent_job_id AS semaphored_job_id, s.dependent_semaphore_url
     FROM semaphore s
-    LEFT JOIN job c_j ON s.semaphore_id = c_j.controlled_semaphore_id
-    LEFT JOIN analysis_base c_ab ON c_ab.analysis_id = c_j.analysis_id
-    LEFT JOIN job s_j ON s_j.job_id = s.dependent_job_id
-    LEFT JOIN analysis_base s_ab ON s_ab.analysis_id = s_j.analysis_id;
+    LEFT JOIN job fan_j ON s.semaphore_id = fan_j.controlled_semaphore_id
+    LEFT JOIN analysis_base fan_ab ON fan_ab.analysis_id = fan_j.analysis_id
+    LEFT JOIN job funnel_j ON funnel_j.job_id = s.dependent_job_id
+    LEFT JOIN analysis_base funnel_ab ON funnel_ab.analysis_id = funnel_j.analysis_id;
+
+-- show a summary of semaphored jobs and/or dependent semaphore URLs
+--
+-- Usage:
+--       select * from semaphore_sumary;
+--       select * from semaphore_summary where semaphored_logic_name like '%nalysi%';
+
+-- must drop then create to avoid errors due to typecasting
+DROP VIEW IF EXISTS semaphore_summary;
+CREATE VIEW semaphore_summary AS
+   SELECT s.semaphore_id, COALESCE(funnel_ab.logic_name, '(see remote hive)') as semaphored_logic_name,
+          s.dependent_job_id as semaphored_job_id, s.dependent_semaphore_url,
+          COALESCE(fan_ab.logic_name, '(see remote hive)') as controlling_logic_name,
+          COUNT(fan_j.job_id) as fan_jobs_this_analysis, s.remote_jobs_counter,
+          COALESCE(to_char(min(fan_j.job_id), '999'), '(see remote hive)') as example_controlling_job_id
+   FROM semaphore s
+   LEFT JOIN job fan_j ON s.semaphore_id = fan_j.controlled_semaphore_id
+   LEFT JOIN analysis_base fan_ab ON fan_ab.analysis_id = fan_j.analysis_id
+   LEFT JOIN job funnel_j ON funnel_j.job_id = s.dependent_job_id
+   LEFT JOIN analysis_base funnel_ab ON funnel_ab.analysis_id = funnel_j.analysis_id
+   WHERE fan_j.status NOT IN ('DONE', 'PASSED_ON') OR fan_j.status IS NULL
+   GROUP BY s.semaphore_id, funnel_ab.logic_name, s.dependent_job_id, fan_ab.logic_name, fan_j.analysis_id;
+
 
 -- time an analysis or group of analyses (given by a name pattern) ----------------------------------------
 --
