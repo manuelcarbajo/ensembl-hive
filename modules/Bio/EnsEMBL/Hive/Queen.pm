@@ -726,7 +726,7 @@ sub safe_synchronize_AnalysisStats {
     }
 
     unless( ($stats->status eq 'DONE')
-         or ( ($stats->status eq 'WORKING') and defined($stats->seconds_since_when_updated) and ($stats->seconds_since_when_updated < 3*60) ) ) {
+         or ( ($stats->status eq 'WORKING') and defined($stats->seconds_since_when_updated) and ($stats->seconds_since_when_updated < $stats->stats_expiration_date_sec) ) ) {
 
         my $sql = "UPDATE analysis_stats SET status='SYNCHING', sync_lock=1 ".
                   "WHERE sync_lock=0 and analysis_id=" . $stats->analysis_id;
