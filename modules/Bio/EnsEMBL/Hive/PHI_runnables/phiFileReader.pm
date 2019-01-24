@@ -65,21 +65,21 @@ sub param_defaults {
     return {
         'column_names'      => 0,
         'delimiter'         => ',',
-        'key_column'        => 0,
-        'input_id'          => 0,   # this parameter is no longer supported and should stay at 0
+
         'inputfile'         => undef,
         'lookup'            => undef,
+
+
+        'core_db_host'       => 'mysql-eg-prod-2.ebi.ac.uk',# HOW TO MAKE THIS ONLY DEFAULT? MUST CHANGE IF PROVIDED WITH INPUT ARG!
+        'core_db_port'       => 4289,
+        'core_db_user'       => 'ensro',
 
         'tax_db_name'       => 'ensembl_compara_master', 
         'tax_db_host'       => 'mysql-eg-pan-prod.ebi.ac.uk',# HOW TO MAKE THIS ONLY DEFAULT? MUST CHANGE IF PROVIDED WITH INPUT ARG!
         'tax_db_port'       => 4276,
         'tax_db_user'       => 'ensro',
         'tax_dba_group'     => 'taxonomy',
-        'tax_db_species' => undef,
-        'tax_db_pass' => undef,
-        'tax_db_driver' => undef,
-        'tax_db_species_id' => 1,
-        'tax_db_multispecies_db' => 0,
+
 
         'MAX_SUB_TAX_DBAS' => 15,
 
@@ -95,6 +95,18 @@ sub fetch_input {
 
     unless (-e $inputfile) {
         die "File $inputfile does not exist"; # Will cause job to fail and leave a message in log_message
+    }
+
+    my $core_db = $self->param_required('core_db_host');
+
+    unless (defined $core_db) {
+        die "core_db $core_db does not exist"; # Will cause job to fail and leave a message in log_message
+    }
+
+    my $core_db_port = $self->param_required('core_db_port');
+
+    unless (defined $core_db_port) {
+        die "core_db_port $core_db_port does not exist"; # Will cause job to fail and leave a message in log_message
     }
 }
 
@@ -139,10 +151,8 @@ sub run {
     my ($rows) = $inputfile    ? $self->_get_rows_from_open(  $inputfile  , '<', $delimiter )
             : die "range of values should be defined by setting 'inputfile' ";
 
-    my $output_ids =  $self->_substitute_rows($rows);
-    my $lookup = $self->_get_lookup();
-    $self->param('lookup', $lookup);
-    $self->param('output_ids', $output_ids);
+    my $output_PHI_entries =  $self->_substitute_rows($rows);
+    $self->param('PHI_entries', $output_PHI_entries);
 }
 
 =head2 write_output
@@ -157,11 +167,11 @@ sub run {
 sub write_output {  # nothing to write out, but some dataflow to perform:
     my $self = shift @_;
 
-    my $output_ids              = $self->param('output_ids');
-    my $fan_branch_code         = $self->param('fan_branch_code');
-    # my $lookup                  = $self->param('lookup');
+    my $PHI_entries  = $self->param('PHI_entries');
+    my $fan_branch_code     = $self->param('fan_branch_code');
+
     # "fan out" into fan_branch_code:
-    $self->dataflow_output_id($output_ids, $fan_branch_code);
+    $self->dataflow_output_id($PHI_entries, $fan_branch_code);
 }
 
 
@@ -225,59 +235,40 @@ sub _get_rows_from_open {
 
 sub _substitute_rows {
     my ($self, $rows) = @_;
-
     my @hashes = ();
+    my $core_db = $self->param_required('core_db_host');
+    my $core_db_port = $self->param_required('core_db_port');
+    my $line_fields = [  'id_number', # 0
+                         'phi_entry', # 1
+                         'uniprot_acc', # 2
+                         'gene_name', # 3
+                         'locus', # 4
+                         'origin', # 5
+                         'species_tax_id', # 6
+                         'subtaxon_id', # 7
+                         'pathogen_name', # 8
+                         'host_tax_id', # 9
+                         'host_name', # 10
+                         'phenotype', # 11
+                         'experiment_condition', # 12
+                         'litterature_id', # 13
+                         'DOI', # 14
+                         # 'core_db_host' # independent from $rows
+                         # 'core_db_port' # independent from $rows
+                      ];
 
     foreach my $row (@$rows) {
-        # my $job_param_hash =  { '_' => $row, map { ("_$_"  => $row->[$_]) } (0..scalar(@$row)-1) };
-        my $job_param_hash =  {  map { ("_$_"  => $row->[$_]) } (0..scalar(@$row)-1) };
+        my $job_param_hash = {};
+        for (my $i = 0 ; $i < scalar(@$line_fields); $i++)  {
+            $job_param_hash->{ @$line_fields[ $i ] } = @$row[ $i ];
+        }
+        $job_param_hash->{ 'core_db_host' } = $core_db;
+        $job_param_hash->{ 'core_db_port' } = $core_db_port;
         push @hashes, $job_param_hash;
     }
 
     return \@hashes;
 }
 
-
-=head2 _get_lookup
-    
-    Description: a private method that loads the registry and the lookup taxonomy DB.
-
-=cut
-
-sub _get_lookup {
-    my $self = shift @_;
-    Bio::EnsEMBL::Registry->load_registry_from_db( 
-                         -USER => 'ensro',
-                         -HOST => 'mysql-eg-prod-1.ebi.ac.uk',
-                         -PORT => 4238);
-      
-    # my $End = time();
-    # my $Diff = $End - $Start;
-
-
-    # print "time to load registry: $Diff\n";
-    # $Start = time();
-    
-    my $lookup =      
-                Bio::EnsEMBL::LookUp::LocalLookUp->new( -SKIP_CONTIGS => 1,
-                                                        -NO_CACHE     => 1 ); # Used to check all leafs sub_specie/strains under a taxonomy_id (specie)
-
-    my $tax_dba_details = undef;
-
-
-    $tax_dba_details->{-GROUP}  = $self->param('tax_dba_group');
-    $tax_dba_details->{-DBNAME} = $self->param('tax_db_name');
-    $tax_dba_details->{-HOST}   = $self->param('tax_db_host');
-    $tax_dba_details->{-PORT}   = $self->param('tax_db_port');
-    $tax_dba_details->{-USER}   = $self->param('tax_db_user');
-
-    my $tax_adaptor = Bio::EnsEMBL::DBSQL::TaxonomyNodeAdaptor->new(
-                            Bio::EnsEMBL::DBSQL::DBAdaptor->new( %{$tax_dba_details} ) 
-                      );
-    
-    $lookup->taxonomy_adaptor($tax_adaptor);
-
-    return ($lookup);
-}
 
 1;

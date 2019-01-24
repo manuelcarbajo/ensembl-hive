@@ -9,7 +9,7 @@
 
     init_pipeline.pl Bio::EnsEMBL::Hive::Examples::Factories::PipeConfig::find_phi_base_candidates_conf  -pipeline_url $EHIVE_URL -hive_force_init 1
 
-    seed_pipeline.pl -url $EHIVE_URL -logic_name inputfile -input_id "{ 'inputfile' => '/homes/mcarbajo/phytopath_dbi/rothamstead_small_version.csv' }"
+    seed_pipeline.pl -url 'mysql://ensrw:scr1b3d1@mysql-eg-devel-1.ebi.ac.uk:4126/mcarbajo_ehive_phibase_db' -logic_name inputfile -input_id '{"inputfile" => "/homes/mcarbajo/phytopath_dbi/rothamstead_small_version.csv","core_db_host" => "mysql-eg-prod-2.ebi.ac.uk", "core_db_port"  => 4239}'
 
     runWorker.pl -url 'mysql://ensrw:scr1b3d1@mysql-eg-devel-1.ebi.ac.uk:4126/mcarbajo_ehive_phibase_db' -debug 1
 
@@ -69,6 +69,8 @@ sub pipeline_wide_parameters {
   return {
      %{$self->SUPER::pipeline_wide_parameters},
     'inputfile'     => $self->o('inputfile'),
+    'core_db_host'     => $self->o('core_db_host'),
+    'core_db_port'     => $self->o('core_db_port'),
   };
 }
 
@@ -107,7 +109,7 @@ sub pipeline_analyses {
                 -logic_name => 'inputfile',
                 -module     => 'Bio::EnsEMBL::Hive::PHI_runnables::phiFileReader',
                 -parameters => {
-                    'inputfile' => '~/phytopath_dbi/rothamstead_small_version.csv',
+                    'inputfile' => '/homes/mcarbajo/phytopath_dbi/rothamstead_small_version.csv',
                     'delimiter' => ',',
                     'column_names' => 1,
                     'output_ids' => '#output_ids#',
@@ -115,13 +117,38 @@ sub pipeline_analyses {
                 -flow_into => {
                 # Create a fan of jobs, using INPUT_PLUS() to propagate all of
                 # this analysis' parameters down branch 2
-                2 => { 'find_subtaxons' => INPUT_PLUS() },
+                    2 => { 'find_subtaxons' => INPUT_PLUS()},
                 },
 
             },
             {
                 -logic_name    => 'find_subtaxons',
-                -module        => 'Bio::EnsEMBL::Hive::PHI_runnables::SubtaxonsFinder', 
+                -module        => 'Bio::EnsEMBL::Hive::PHI_runnables::SubtaxonsFinder',
+                -flow_into => {
+                     2 => { 'find_translation' => INPUT_PLUS() },
+                    # '2->A' => { 'find_translation' => INPUT_PLUS() },
+                    # 'A->1' => ['clean_xrefs']
+                },
+            },
+            {
+                -logic_name    => 'find_translation',
+                -module        => 'Bio::EnsEMBL::Hive::PHI_runnables::TranslationFinder',
+                -flow_into => {
+                    3 => WHEN (
+                                '#_evidence# eq "DIRECT_MATCH"' => { 'clean_xrefs' => INPUT_PLUS()},
+                               ),
+                    4 => { 'blast_p' => INPUT_PLUS()}
+                },
+            },
+            {
+                -logic_name    => 'clean_xrefs',
+                -module        => 'Bio::EnsEMBL::Hive::PHI_runnables::xrefs_cleaner',
+
+            },
+            {
+                -logic_name    => 'blast_p',
+                -module        => 'Bio::EnsEMBL::Hive::PHI_runnables::protein_blaster',
+
             },
            ];
    

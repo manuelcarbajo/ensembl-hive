@@ -61,23 +61,7 @@ use Scalar::Util qw(reftype);
 
 sub param_defaults {
         return {
-  
-        'delimiter'         => ',',
-        'lookup'            => undef,
-
-        'tax_db_name'       => 'ensembl_compara_master', 
-        'tax_db_host'       => 'mysql-eg-pan-prod.ebi.ac.uk',# HOW TO MAKE THIS ONLY DEFAULT? MUST CHANGE IF PROVIDED WITH INPUT ARG!
-        'tax_db_port'       => 4276,
-        'tax_db_user'       => 'ensro',
-        'tax_dba_group'     => 'taxonomy',
-        'tax_db_species' => undef,
-        'tax_db_pass' => undef,
-        'tax_db_driver' => undef,
-        'tax_db_species_id' => 1,
-        'tax_db_multispecies_db' => 0,
-
-        'MAX_SUB_TAX_DBAS' => 15,
-
+        'MAX_SUB_TAX_DBAS' => 6,
         'fan_branch_code'   => 2,
     };
 }
@@ -93,52 +77,143 @@ sub fetch_input {
     my $self = shift;
     # read_input is typically used to validate input, test db connections are
     # working, etc. 
-
-    my $annotn_tax_id = $self->param_required("_6");
+    my $annotn_tax_id = $self->param_required("species_tax_id");
     if (! $annotn_tax_id) {
          die 'annotn_tax_id is not defined'; # Will cause job to fail and leave a message in log_message
-    }
-
-    
-    # # use param_required for this, since we want the job to fail if there's no output_ids.
-    # my $output_ids = $self->param_required('input_id');
-
-
-    # if (! $output_ids) {
-    #     die 'output_ids is not defined'; # Will cause job to fail and leave a message in log_message
-    # }
+    } 
 
 }
 
 
 sub run {
     my $self = shift;
-    
-    
-    my $annotn_tax_id = $self->param_required("_6");
+    my $annotn_tax_id = $self->param_required("species_tax_id");
+    my $output_subtaxons =  $self->_get_subtaxons_dbas($annotn_tax_id);
 
-    my $search = Bio::EnsEMBL::EGPipeline::Xref::BlastSearch->new();
-    $self->param('search', $search);
-    my $lookup = _get_lookup();
+    $self->param('subtaxons_dbas', $output_subtaxons);
+}
+
+=head2 _get_subtaxons_dbas
+    
+    Description: a private method that returns an arrayref of all dbadaptors of a supplied taxonomy_id ( = with its taxonomic children if any).
+    In the eventuality of too many taxonomic children, the methood returns a maximum number of subtax dbas, limit defined by MAX_SUB_TAX_DBAS
+
+=cut
+sub _get_subtaxons_dbas {
+  my ($self, $annotn_tax_id) = @_;
+    my $lookup = $self->_get_lookup();
     my $branch_dbas = $lookup->get_all_by_taxon_branch($annotn_tax_id);
     my $nb_taxon_branch_dbas = scalar(@{$branch_dbas});
+    my $MAX_SUB_TAX_DBAS = $self->param_required("MAX_SUB_TAX_DBAS");
 
-    for my $brch_dba (@{$branch_dbas}) {
+    if ($nb_taxon_branch_dbas == 0) {
+      print "\tNo dbs for this specie tax_id: $annotn_tax_id\n";
+  } elsif ( $nb_taxon_branch_dbas > $MAX_SUB_TAX_DBAS ) {# if too many branch_dbas, limit the selection to MAX_SUB_TAX_DBAS
+      print "\tToo many dbs for this specie (tax_id:$annotn_tax_id):  $nb_taxon_branch_dbas\n";
+      $branch_dbas = $self->_limit_branch_dbas(@{$branch_dbas}); 
+  } 
 
-      my $mc = $brch_dba->get_MetaContainer();
-      my $branch_species = $mc->single_value_by_key('species.production_name');
-      my $division =  $mc->single_value_by_key('species.division');
+  return $branch_dbas;
+}
 
-      print " ----  branch_species: $branch_species \n";
-    }
+=head2 _limit_branch_dbas
+    
+    Description: a private method that limits a supplied arrayref of dbas to a predefined number (MAX_SUB_TAX_DBAS)
 
+=cut
 
+sub _limit_branch_dbas {
+  my ($self, @branch_dbas) = @_;
+  my $new_branch_dbas;
+  
+  my $coredb_found = undef;
+  my $nb_branches_picked = 0;
+  my $i = 0;
+  my $nb_taxon_branch_dbas = scalar(@branch_dbas);
+  my $MAX_SUB_TAX_DBAS = $self->param_required("MAX_SUB_TAX_DBAS");
+
+  # Go through all dbs and select just the coreDB
+  while (!$coredb_found && $i < $nb_taxon_branch_dbas) {
+    my $brch_dba = $branch_dbas[$i++]; 
+    if ($brch_dba->dbc()->dbname() !~ /collection/) { 
+      $coredb_found = 'true';
+      push @{$new_branch_dbas}, $brch_dba;
+      $nb_branches_picked ++;
+     }
+  }
+
+  # Now add a limited number of collection DBs 
+  $i=0;
+  while ($nb_branches_picked < $MAX_SUB_TAX_DBAS  && $i < $nb_taxon_branch_dbas) {
+    my $brch_dba = $branch_dbas[$i++]; 
+    if ($brch_dba->dbc()->dbname() =~ /collection/) {
+      push @{$new_branch_dbas}, $brch_dba;
+      $nb_branches_picked ++;
+     }
+  }
+
+  return $new_branch_dbas;
 }
 
 sub write_output {
-    # my $self = shift;
+    my ($self, @branch_dbas) = @_;
+    my $fan_branch_code = $self->param('fan_branch_code');
 
-my $fan_branch_code         = $self->param('fan_branch_code');
+    my $subtax_entries = $self->_build_output_hash();
+
+    # "fan out" into fan_branch_code:
+    $self->dataflow_output_id($subtax_entries, $fan_branch_code);
+}
+
+
+
+=head2 _build_output_hash 
+
+    Description: a private method that returns a hash of parameters for all subjobs to fan. 
+    Each job will have its own corresponding dba + the current job ($self) input fanned parameters from phiFileReader
+
+=cut
+
+sub _build_output_hash {
+    my $self = shift;
+    my @hashes = ();
+    my $subtax_dbas = $self->param_required("subtaxons_dbas");
+    # my $line_fields = [  'id_number', # 0
+    #                      'phi_entry', # 1
+    #                      'uniprot_acc', # 2
+    #                      'gene_name', # 3
+    #                      'locus', # 4
+    #                      'origin', # 5
+    #                      'species_tax_id', # 6
+    #                      'subtaxon_id', # 7
+    #                      'pathogen_name', # 8
+    #                      'host_tax_id', # 9
+    #                      'host_name', # 10
+    #                      'phenotype', # 11
+    #                      'experiment_condition', # 12
+    #                      'litterature_id', # 13
+    #                      'DOI' # 14
+                         # 'core_db_host' # independent from $rows
+                         # 'core_db_port' # independent from $rows
+
+
+    #                     ---- NEW FIELDS ----
+    #                    # '_species' # 15, specific species name of the subtaxon branch
+    #                    # '_db_name' # 17 subtaxon db name
+    #                   ];
+
+    foreach my $dba (@$subtax_dbas) {
+        my $job_param_hash = {};
+        # for (my $i = 0 ; $i < scalar(@$line_fields); $i++)  {
+        #     $job_param_hash->{ @$line_fields[ $i ] } = $self->param(@$line_fields[ $i ]);
+        # }
+        $job_param_hash->{ '_species' } = $dba->{ '_species' };
+        $job_param_hash->{ '_dbname' } = $dba->dbc()->{'_dbname'};
+        push @hashes, $job_param_hash;
+    }
+
+    return \@hashes;
+
 }
 
 sub post_cleanup {
@@ -155,8 +230,8 @@ sub _get_lookup {
     my $self = shift @_;
     Bio::EnsEMBL::Registry->load_registry_from_db( 
                          -USER => 'ensro',
-                         -HOST => 'mysql-eg-prod-1.ebi.ac.uk',
-                         -PORT => 4238);
+                         -HOST => 'mysql-eg-prod-2.ebi.ac.uk',
+                         -PORT => 4239);
       
     
     my $lookup =      
@@ -181,63 +256,5 @@ sub _get_lookup {
     return ($lookup);
 }
 
-sub find_translation { 
-  my ( $self, $dba, $uniprot_acc, $locus_tag, $gene_name ) = @_;
-  my $translation;
-  my $identifier_type;
-  my $dbentry_adaptor = $dba->get_adaptor("DBEntry");
-  my @transcripts_ids = $dbentry_adaptor->list_transcript_ids_by_extids($uniprot_acc);
-  my @gene_ids = $dbentry_adaptor->list_gene_ids_by_extids($uniprot_acc);
 
-  if ( scalar(@gene_ids) == 0 ) {
-    @gene_ids = $dbentry_adaptor->list_gene_ids_by_extids($locus_tag);
-    $identifier_type = 'locus';
-  }
-  if ( scalar(@gene_ids) == 0 ) {
-    @gene_ids = $dbentry_adaptor->list_gene_ids_by_extids($gene_name);
-    $identifier_type = 'name';
-  }
-  
-  my $translation_adaptor = $dba->get_adaptor("Translation");
-  my $transcript_adaptor  = $dba->get_adaptor("Transcript");
-  my $gene_adaptor        = $dba->get_adaptor("Gene");
-  my $transcript;
-  my $gene;
-
-  if ( scalar(@transcripts_ids) >= 1 ) {
-    my $transcript_id = $transcripts_ids[0];
-    $transcript = $transcript_adaptor->fetch_by_dbID($transcript_id);
-    $translation = $translation_adaptor->fetch_by_Transcript($transcript);
-    $identifier_type = 'accession';
-  } elsif ( scalar(@gene_ids) >= 1 ) {
-    $gene = $gene_adaptor->fetch_by_dbID( $gene_ids[0] );
-    my @transcripts = @{ $transcript_adaptor->fetch_all_by_Gene($gene) };
-    $transcript = $transcripts[0];
-    $translation = $translation_adaptor->fetch_by_Transcript($transcript);
-  }
-
-  return $translation, $identifier_type;
-} ## end sub find_translation
-
-sub get_uniprot_seq {
-  my ($self, $acc) = @_;
-
-  my $search = $self->param('search');
-  my $seq = $search->get('http://www.uniprot.org/uniprot/'.$acc.'.fasta');
-  $seq =~ s/^>\S+\s+([^\n]+)\n//;
-  my $des = $1;
-  $seq =~ tr/\n//d;
-  return {seq=>$seq,des=>$des};
-}
-
-sub get_uniparc_seq {
-  my ($self, $acc) = @_;
-
-  my $search =  $self->param('search');
-  my $seq = $search->get('http://www.uniprot.org/uniparc/?query=' . $acc . '&columns=sequence&format=fasta');
-  $seq =~ s/^>\S+\s+([^\n]+)\n//;
-  my $des = $1;
-  $seq =~ tr/\n//d;
-  return {seq=>$seq,des=>$des};
-}
 1;
