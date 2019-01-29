@@ -62,8 +62,9 @@ use Scalar::Util qw(reftype);
 sub param_defaults {
 
         return {
-        'ready_branch_code' => 3,
-        'blast_branch_code' => 4,
+        'accumulator_branch_code' => 1,
+        'blast_branch_code' => 3,
+        'phibase_xrefs' => undef,
     };
 }
 
@@ -76,9 +77,7 @@ sub pre_cleanup {
 
 sub fetch_input {
     my $self = shift;
-    # read_input is typically used to validate input, test db connections are
-    # working, etc. 
-  
+
     my $annotn_tax_id = $self->param_required("species_tax_id");
     if (! $annotn_tax_id) {
          die 'annotn_tax_id is not defined'; # Will cause job to fail and leave a message in log_message
@@ -99,6 +98,7 @@ sub fetch_input {
 
 sub run {
     my $self = shift;
+
     my $specific_species_name = $self->param_required("_species");
     my $translation;
     my $id_type;
@@ -115,7 +115,7 @@ sub write_output {
     my $self = shift;
 
     my $blast_branch_code = $self->param('blast_branch_code');
-    my $ready_branch_code = $self->param('ready_branch_code');
+    my $accumulator_branch_code = $self->param('accumulator_branch_code');
     my $translation = $self->param('translation');
 
     my $id_type = $self->param('id_type');
@@ -127,8 +127,10 @@ sub write_output {
     if($translation) {
       print "Translation_found:" . $translation->stable_id . ":\n";
       $translation_found_params = $self->_build_output_hash($translation, $id_type, $brch_dba);
+      #TODO
+      print "This values should now go to the accumulator\n";
       print Dumper($translation_found_params);
-      $self->dataflow_output_id($translation_found_params, $ready_branch_code);
+      $self->dataflow_output_id($translation_found_params, $accumulator_branch_code);
       
     } else {
       print "Translation_unknw:$translation:\n";
@@ -203,28 +205,27 @@ sub _find_translation {
                                          -species => $specific_species_name,
                                          -multispecies_db => 1
                           );
-  my $dbc=$dba->dbc();
-  my $sth = $dbc->prepare( "SELECT DISTINCT species_id FROM $specific_db_name.meta " .
-        "WHERE meta_key='species.production_name' AND meta_value LIKE '$specific_species_name'");
-  $sth->execute() or
-    die "Error querying for species_id: perhaps the DB doesn't have a meta table?\n" .
-      "$DBI::err .... $DBI::errstr\n";
 
-  my $species_id;
-  $sth->bind_columns(\$species_id);
-  $sth->fetch;
+    # The following commented block just sets the species_id correctly (which the previous initialisation fails to do) but it might not be necessary at all, 
+  # my $dbc=$dba->dbc();
+  # my $sth = $dbc->prepare( "SELECT DISTINCT species_id FROM $specific_db_name.meta " .
+  #       "WHERE meta_key='species.production_name' AND meta_value LIKE '$specific_species_name'");
+  # $sth->execute() or
+  #   die "Error querying for species_id: perhaps the DB doesn't have a meta table?\n" .
+  #     "$DBI::err .... $DBI::errstr\n";
+
+  # my $species_id;
+  # $sth->bind_columns(\$species_id);
+  # $sth->fetch;
   
-  $dba->species_id($species_id);
-  # end get $dba... Oufff...!!
+  # $dba->species_id($species_id);
+  # end commented block/ end get_dba... Oufff...!!
   
   my $uniprot_acc = $self->param_required('uniprot_acc');
   my $locus_tag = $self->param_required('locus');
   my $gene_name = $self->param_required('gene_name');
   print "-----------------------------  accession $uniprot_acc /locus $locus_tag /gene_name $gene_name ---------------------------------\n";
-  # if ($specific_species_name eq 'fusarium_graminearum_gca_000599445') {
-  #   print "dba:\n";
-  #   print Dumper ($dba );
-  # }
+
   my $translation = '';
   my $identifier_type = '';
 
@@ -259,23 +260,65 @@ sub _find_translation {
   if ( scalar(@transcripts_ids) >= 1 ) {
     
     my $transcript_id = $transcripts_ids[0];
-    print "CONTROL++++++ ++a+ uniprot_acc: $uniprot_acc:, locus_tag: $locus_tag:, gene_name: $gene_name:, identifier_type: accession; transcript_id: $transcript_id\n";
     $transcript = $transcript_adaptor->fetch_by_dbID($transcript_id);
     $translation = $translation_adaptor->fetch_by_Transcript($transcript);
     $identifier_type = 'accession';
   } elsif ( scalar(@gene_ids) >= 1 ) {
-      print "CONTROL++++++ ++b+gene_ids[0]:" . $gene_ids[0] . ":, uniprot_acc: $uniprot_acc:, locus_tag: $locus_tag:, gene_name: $gene_name:, identifier_type: $identifier_type;\n";
       $gene = $gene_adaptor->fetch_by_dbID( $gene_ids[0] );
       my @transcripts = @{ $transcript_adaptor->fetch_all_by_Gene($gene) };
-
       $transcript = $transcripts[0];
       $translation = $translation_adaptor->fetch_by_Transcript($transcript);
   } else {
       print "NO TRANSCRIPTS NO GENES FOR THIS:: uniprot_acc: $uniprot_acc:, locus_tag: $locus_tag:, gene_name: $gene_name:, identifier_type: $identifier_type;\n";
   }
-  print "CONTROL++++++ END find_translation+++:\n";
   return $translation, $identifier_type, $dba;
 } 
+
+
+=head2 _build_output_hash 
+
+    Description: a private method that, in those cases where the translation is found via a DIRECT_MATCH'
+    builds a hash containing the phibase_xrefs and pass it to the accumulator.
+
+=cut
+
+sub _accumulate_phibase_xrefs {
+    my $self = shift;
+
+    my $phibase_id = $self->param_required('phi_entry');
+    if (! $phibase_id || remove_spaces($phibase_id) eq '' ) {
+         die 'phibase_id is not defined'; # Will cause job to fail and leave a message in log_message
+    } 
+
+    my $acc = $self->param_required('uniprot_acc');
+    if (! $acc || remove_spaces($acc) eq '' ) {
+         die 'uniprot accesion is not defined'; # Will cause job to fail and leave a message in log_message
+    } 
+
+    my $host_tax_id = $self->param_required('host_tax_id');
+    if (! $host_tax_id || remove_spaces($host_tax_id) eq '' ) {
+         die ' host_tax_id is not defined'; # Will cause job to fail and leave a message in log_message
+    }
+
+    my $host_name = $self->param_required('host_name');
+    if (! $host_name || remove_spaces($host_name) eq '' ) {
+         die ' host_name is not defined'; # Will cause job to fail and leave a message in log_message
+    }
+
+    my $phenotype_name = $self->param_required('phenotype');
+    if (! $phenotype_name || remove_spaces($phenotype_name) eq '' ) {
+         die ' phenotype_name is not defined'; # Will cause job to fail and leave a message in log_message
+    }
+
+    my $evidence = $self->param_required('_evidence');
+    if (! $evidence || remove_spaces($evidence) eq '' ) {
+         die ' evidence is not defined'; # Will cause job to fail and leave a message in log_message
+    }
+
+    # nested hash of phibase xrefs by species-translation_id-phiId
+    my $phibase_xrefs = {};
+
+}
 
 =head2 _build_output_hash 
 
@@ -285,6 +328,7 @@ sub _find_translation {
 
 sub _build_output_hash {
     my ($self, $translation, $id_type, $dba) = @_;
+    my @hashes = ();
 
         # line_fields =    'id_number', # 0
     #                      'phi_entry', # 1
@@ -338,31 +382,11 @@ sub _build_output_hash {
     $self->param('evidence', $evidence);
     $job_param_hash->{ '_evidence' } = $evidence ;
 
-    return $job_param_hash;
+    push @hashes, $job_param_hash;
+    return \@hashes;
+
+    #return $job_param_hash;
   
 }
-
-sub get_uniprot_seq {
-  my ($self, $acc) = @_;
-
-  my $search = $self->param('search');
-  my $seq = $search->get('http://www.uniprot.org/uniprot/'.$acc.'.fasta');
-  $seq =~ s/^>\S+\s+([^\n]+)\n//;
-  my $des = $1;
-  $seq =~ tr/\n//d;
-  return {seq=>$seq,des=>$des};
-}
-
-sub get_uniparc_seq {
-  my ($self, $acc) = @_;
-
-  my $search =  $self->param('search');
-  my $seq = $search->get('http://www.uniprot.org/uniparc/?query=' . $acc . '&columns=sequence&format=fasta');
-  $seq =~ s/^>\S+\s+([^\n]+)\n//;
-  my $des = $1;
-  $seq =~ tr/\n//d;
-  return {seq=>$seq,des=>$des};
-}
-
 
 1;

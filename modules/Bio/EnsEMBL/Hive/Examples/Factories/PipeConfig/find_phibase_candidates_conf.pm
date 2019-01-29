@@ -68,9 +68,11 @@ sub pipeline_wide_parameters {
   my ($self) = @_;
   return {
      %{$self->SUPER::pipeline_wide_parameters},
-    'inputfile'     => $self->o('inputfile'),
-    'core_db_host'     => $self->o('core_db_host'),
-    'core_db_port'     => $self->o('core_db_port'),
+    'inputfile'             => $self->o('inputfile'),
+    'core_db_host'          => $self->o('core_db_host'),
+    'core_db_port'          => $self->o('core_db_port'),
+    'blast_db_directory'    => $self->o('blast_db_dir'),
+    'min_blast_identity'    => 100, , #by default, do not annotate proteins that do not have 100 % identity
   };
 }
 
@@ -115,9 +117,9 @@ sub pipeline_analyses {
                     'output_ids' => '#output_ids#',
                 },
                 -flow_into => {
-                # Create a fan of jobs, using INPUT_PLUS() to propagate all of
-                # this analysis' parameters down branch 2
-                    2 => { 'find_subtaxons' => INPUT_PLUS()},
+                    '2->A' => { 'find_subtaxons' => INPUT_PLUS()},
+                    'A->1' => ['clean_xrefs'],
+                    
                 },
 
             },
@@ -125,9 +127,9 @@ sub pipeline_analyses {
                 -logic_name    => 'find_subtaxons',
                 -module        => 'Bio::EnsEMBL::Hive::PHI_runnables::SubtaxonsFinder',
                 -flow_into => {
-                     2 => { 'find_translation' => INPUT_PLUS() },
-                    # '2->A' => { 'find_translation' => INPUT_PLUS() },
-                    # 'A->1' => ['clean_xrefs']
+                      2 => { 'find_translation' => INPUT_PLUS() },
+                     # '2->A' => { 'find_translation' => INPUT_PLUS() },
+                     # 'A' => {'clean_xrefs' => INPUT_PLUS() },
                 },
             },
             {
@@ -135,23 +137,48 @@ sub pipeline_analyses {
                 -module        => 'Bio::EnsEMBL::Hive::PHI_runnables::TranslationFinder',
                 -flow_into => {
                     3 => WHEN (
-                                '#_evidence# eq "DIRECT_MATCH"' => { 'clean_xrefs' => INPUT_PLUS()},
+                                '#_evidence# eq "BLAST_MATCH"' => { 'blast_p' => INPUT_PLUS()},
                                ),
-                    4 => { 'blast_p' => INPUT_PLUS()}
+                    1 => WHEN (
+                                '#_evidence# eq "DIRECT_MATCH"' => {'phi_accumulator' => INPUT_PLUS() },
+                               ),
+                  
                 },
-            },
-            {
-                -logic_name    => 'clean_xrefs',
-                -module        => 'Bio::EnsEMBL::Hive::PHI_runnables::xrefs_cleaner',
-
             },
             {
                 -logic_name    => 'blast_p',
                 -module        => 'Bio::EnsEMBL::Hive::PHI_runnables::protein_blaster',
+                -flow_into => {
+                    1 => ['phi_accumulator' ], 
+                },
 
+            },
+            {
+                -logic_name    => 'phi_accumulator',
+                -module        => 'Bio::EnsEMBL::Hive::PHI_runnables::phi_accumulator_writer',
+            },
+            {
+                -logic_name    => 'clean_xrefs',
+                -module        => 'Bio::EnsEMBL::Hive::PHI_runnables::xrefs_cleaner',
+                -flow_into => {
+                      1 => ['build_dbload_hash' ],
+                },
+
+            },            
+            {
+                -logic_name    => 'build_dbload_hash',
+                -module        => 'Bio::EnsEMBL::Hive::PHI_runnables::db_load_hasher',
             },
            ];
    
+}
+
+sub hive_meta_table {
+  my ($self) = @_;
+  return {
+    %{$self->SUPER::hive_meta_table},
+    'hive_use_param_stack'  => 1, #Jobs see parameters from their ascendants without needing INPUT_PLUS()
+  };
 }
 
 1;

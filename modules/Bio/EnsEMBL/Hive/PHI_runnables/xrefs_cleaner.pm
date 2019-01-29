@@ -47,38 +47,23 @@ sub param_defaults {
 
     return {
 
-        'core_db_host'       => 'mysql-eg-prod-2.ebi.ac.uk',# HOW TO MAKE THIS ONLY DEFAULT? MUST CHANGE IF PROVIDED WITH INPUT ARG!
-        'core_db_port'       => 4289,
-        'core_db_user'       => 'ensro',
-
-        'tax_db_name'       => 'ensembl_compara_master', 
-        'tax_db_host'       => 'mysql-eg-pan-prod.ebi.ac.uk',# HOW TO MAKE THIS ONLY DEFAULT? MUST CHANGE IF PROVIDED WITH INPUT ARG!
-        'tax_db_port'       => 4276,
-        'tax_db_user'       => 'ensro',
-        'tax_dba_group'     => 'taxonomy',
-
-        'MAX_SUB_TAX_DBAS' => 15,
-
-        'fan_branch_code'   => 2,
-
     };
 }
 
 sub fetch_input {
     my $self = shift;
 
-
-    my $core_db = $self->param_required('core_db_host');
-
-    unless (defined $core_db) {
-        die "core_db $core_db does not exist"; # Will cause job to fail and leave a message in log_message
+    my $core_db_host = $self->param_required('core_db_host');    
+    unless (defined $core_db_host) {
+        die "core_db_host $core_db_host does not exist"; # Will cause job to fail and leave a message in log_message
     }
 
-    my $core_db_port = $self->param_required('core_db_port');
-
+    my $core_db_port = $self->param_required('core_db_port');      
     unless (defined $core_db_port) {
         die "core_db_port $core_db_port does not exist"; # Will cause job to fail and leave a message in log_message
     }
+    
+
 }
 
 
@@ -86,27 +71,13 @@ sub fetch_input {
 
     Description : Implements run() interface method of Bio::EnsEMBL::Hive::Process that is used to perform the main bulk of the job (minus input and output).
 
-    
-
 =cut
 
 sub run {
     my $self = shift @_;
-
-    my $specific_species= $self->param_required('_species');
-    unless (defined $specific_species) {
-        die "param specific_species does not exist"; # Will cause job to fail and leave a message in log_message
-    }
-    my $evidence = $self->param_required('_evidence');
-    unless (defined $evidence) {
-        die "param evidence does not exist"; # Will cause job to fail and leave a message in log_message
-    }
-    my $phi_entry = $self->param_required('phi_entry');
-    unless (defined $phi_entry) {
-        die "param phi_entry does not exist"; # Will cause job to fail and leave a message in log_message
-    }
-    print "phi_entry $phi_entry with $evidence for $specific_species\n ";
-
+     
+    my $core_db_host = $self->param_required('core_db_host');  
+    print "------- CLEAN_XREF ------------  $core_db_host   \n";
 }
 
 =head2 write_output

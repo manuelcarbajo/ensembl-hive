@@ -62,7 +62,8 @@ use Scalar::Util qw(reftype);
 sub param_defaults {
         return {
         'MAX_SUB_TAX_DBAS' => 6,
-        'fan_branch_code'   => 2,
+        'fan_branch_code'  => 2,
+        'has_dba'          => undef,
     };
 }
 
@@ -89,8 +90,10 @@ sub run {
     my $self = shift;
     my $annotn_tax_id = $self->param_required("species_tax_id");
     my $output_subtaxons =  $self->_get_subtaxons_dbas($annotn_tax_id);
-
+    
     $self->param('subtaxons_dbas', $output_subtaxons);
+    
+    
 }
 
 =head2 _get_subtaxons_dbas
@@ -157,12 +160,13 @@ sub _limit_branch_dbas {
 
 sub write_output {
     my ($self, @branch_dbas) = @_;
+
     my $fan_branch_code = $self->param('fan_branch_code');
-
     my $subtax_entries = $self->_build_output_hash();
-
+    
     # "fan out" into fan_branch_code:
     $self->dataflow_output_id($subtax_entries, $fan_branch_code);
+    
 }
 
 
@@ -199,7 +203,7 @@ sub _build_output_hash {
 
     #                     ---- NEW FIELDS ----
     #                    # '_species' # 15, specific species name of the subtaxon branch
-    #                    # '_db_name' # 17 subtaxon db name
+    #                    # '_dbname' # 17 subtaxon db name
     #                   ];
 
     foreach my $dba (@$subtax_dbas) {
